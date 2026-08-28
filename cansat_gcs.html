@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CanSat Ground Station</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: #12141a; color: #e6e8ee;
+    font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+  .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  button {
+    background: #2563eb; color: white; border: none; padding: 8px 16px;
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #3a3d46; cursor: not-allowed; }
+  select {
+    background: #1c1f27; color: #e6e8ee; border: 1px solid #333742;
+    border-radius: 6px; padding: 8px; font-size: 14px;
+  }
+  .status { font-size: 13px; padding: 4px 10px; border-radius: 12px; }
+  .status.connected { background: #14532d; color: #86efac; }
+  .status.disconnected { background: #450a0a; color: #fca5a5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .card {
+    background: #1c1f27; border: 1px solid #2a2e38; border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .card .label { font-size: 11px; color: #9aa0ab; text-transform: uppercase; letter-spacing: 0.05em; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card .value.small { font-size: 16px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .panel {
+    background: #1c1f27; border: 1px solid #2a2e38; border-radius: 10px;
+    padding: 14px; flex: 1; min-width: 300px;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; color: #c7cbd4; }
+  #map { height: 320px; border-radius: 8px; }
+  #horizon { display: block; margin: 0 auto; background: #0a0c10; border-radius: 8px; }
+  #log {
+    height: 160px; overflow-y: auto; background: #0a0c10; border-radius: 8px;
+    padding: 8px; font-family: monospace; font-size: 11px; color: #7dd3fc;
+    white-space: pre-wrap; margin-top: 16px;
+  }
+  .chartWrap { position: relative; height: 220px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<h1>CanSat Ground Station</h1>
+<div class="topbar">
+  <button id="connectBtn">Connect Serial</button>
+  <select id="baudSelect">
+    <option value="9600" selected>9600 baud</option>
+    <option value="19200">19200 baud</option>
+    <option value="57600">57600 baud</option>
+    <option value="115200">115200 baud</option>
+  </select>
+  <span id="statusPill" class="status disconnected">Disconnected</span>
+  <span id="packetInfo" style="font-size:12px;color:#9aa0ab;"></span>
+</div>
+
+<div class="grid">
+  <div class="card"><div class="label">Altitude (GPS)</div><div class="value" id="valGpsAlt">--</div></div>
+  <div class="card"><div class="label">Altitude (baro)</div><div class="value" id="valBaroAlt">--</div></div>
+  <div class="card"><div class="label">Satellites</div><div class="value" id="valSats">--</div></div>
+  <div class="card"><div class="label">Pressure</div><div class="value small" id="valPress">--</div></div>
+  <div class="card"><div class="label">Temperature</div><div class="value small" id="valTemp">--</div></div>
+  <div class="card"><div class="label">Roll / Pitch / Yaw</div><div class="value small" id="valAttitude">--</div></div>
+  <div class="card"><div class="label">Calibration (S/G/A/M)</div><div class="value small" id="valCal">--</div></div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <h2>Map</h2>
+    <div id="map"></div>
+  </div>
+  <div class="panel">
+    <h2>Attitude</h2>
+    <canvas id="horizon" width="280" height="280"></canvas>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:12px;">
+  <h2>Altitude over time</h2>
+  <div class="chartWrap"><canvas id="altChart"></canvas></div>
+</div>
+
+<div id="log"></div>
+
+<script>
+let port, reader, keepReading = false;
+let packetCount = 0, lastPacketTime = 0;
+const trail = [];
+
+const map = L.map('map').setView([-6.9, 107.6], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const marker = L.marker([-6.9, 107.6]).addTo(map);
+const polyline = L.polyline([], { color: '#2563eb' }).addTo(map);
+
+const ctx = document.getElementById('altChart').getContext('2d');
+const altChart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { label: 'GPS alt (m)', data: [], borderColor: '#22c55e', tension: 0.2 },
+    { label: 'Baro alt (m)', data: [], borderColor: '#f59e0b', tension: 0.2 }
+  ]},
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { ticks: { color: '#9aa0ab' }, grid: { color: '#2a2e38' } },
+      y: { ticks: { color: '#9aa0ab' }, grid: { color: '#2a2e38' } }
+    },
+    plugins: { legend: { labels: { color: '#c7cbd4' } } }
+  }
+});
+
+function drawHorizon(rollDeg, pitchDeg) {
+  const c = document.getElementById('horizon');
+  const g = c.getContext('2d');
+  const w = c.width, h = c.height, cx = w/2, cy = h/2, r = 120;
+  g.clearRect(0,0,w,h);
+  g.save();
+  g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.clip();
+
+  g.save();
+  g.translate(cx, cy);
+  g.rotate(rollDeg * Math.PI / 180);
+  const pitchOffset = pitchDeg * 3;
+  g.fillStyle = '#3b82f6';
+  g.fillRect(-r*2, -r*2 + pitchOffset, r*4, r*2);
+  g.fillStyle = '#8a5a2c';
+  g.fillRect(-r*2, pitchOffset, r*4, r*2);
+  g.strokeStyle = '#ffffff'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(-r*2, pitchOffset); g.lineTo(r*2, pitchOffset); g.stroke();
+  g.restore();
+
+  g.restore();
+  g.strokeStyle = '#e6e8ee'; g.lineWidth = 3;
+  g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.stroke();
+  g.strokeStyle = '#facc15'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(cx - 30, cy); g.lineTo(cx - 8, cy); g.stroke();
+  g.beginPath(); g.moveTo(cx + 8, cy); g.lineTo(cx + 30, cy); g.stroke();
+  g.beginPath(); g.arc(cx, cy, 3, 0, Math.PI*2); g.fillStyle = '#facc15'; g.fill();
+}
+drawHorizon(0, 0);
+
+function log(line) {
+  const el = document.getElementById('log');
+  el.textContent += line + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+function parsePacket(line) {
+  line = line.trim();
+  if (!line.startsWith('$TLM,')) return;
+  const parts = line.split(',');
+  if (parts.length < 19) return;
+
+  const [ , ms, lat, lon, gpsAlt, sats, pressHpa, baroAlt, baroTemp,
+          roll, pitch, yaw, ax, ay, az, calSys, calGyro, calAcc, calMag ] = parts;
+
+  const flat = parseFloat(lat), flon = parseFloat(lon);
+  document.getElementById('valGpsAlt').textContent = parseFloat(gpsAlt).toFixed(1) + ' m';
+  document.getElementById('valBaroAlt').textContent = parseFloat(baroAlt).toFixed(1) + ' m';
+  document.getElementById('valSats').textContent = sats;
+  document.getElementById('valPress').textContent = parseFloat(pressHpa).toFixed(1) + ' hPa';
+  document.getElementById('valTemp').textContent = parseFloat(baroTemp).toFixed(1) + ' C';
+  document.getElementById('valAttitude').textContent =
+    parseFloat(roll).toFixed(1) + ' / ' + parseFloat(pitch).toFixed(1) + ' / ' + parseFloat(yaw).toFixed(1);
+  document.getElementById('valCal').textContent = `${calSys}/${calGyro}/${calAcc}/${calMag}`;
+
+  drawHorizon(parseFloat(roll), parseFloat(pitch));
+
+  if (flat !== 0 && flon !== 0) {
+    marker.setLatLng([flat, flon]);
+    trail.push([flat, flon]);
+    polyline.setLatLngs(trail);
+    if (trail.length === 1) map.setView([flat, flon], 16);
+  }
+
+  const tSec = (parseFloat(ms) / 1000).toFixed(1);
+  altChart.data.labels.push(tSec);
+  altChart.data.datasets[0].data.push(parseFloat(gpsAlt));
+  altChart.data.datasets[1].data.push(parseFloat(baroAlt));
+  if (altChart.data.labels.length > 100) {
+    altChart.data.labels.shift();
+    altChart.data.datasets[0].data.shift();
+    altChart.data.datasets[1].data.shift();
+  }
+  altChart.update('none');
+
+  packetCount++;
+  lastPacketTime = Date.now();
+  log(line);
+}
+
+async function connect() {
+  if (!('serial' in navigator)) {
+    alert('Web Serial not supported. Use Chrome or Edge desktop.');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    const baud = parseInt(document.getElementById('baudSelect').value, 10);
+    await port.open({ baudRate: baud });
+
+    document.getElementById('statusPill').textContent = 'Connected';
+    document.getElementById('statusPill').className = 'status connected';
+    document.getElementById('connectBtn').textContent = 'Disconnect';
+
+    keepReading = true;
+    readLoop();
+  } catch (err) {
+    log('Connection error: ' + err.message);
+  }
+}
+
+async function disconnect() {
+  keepReading = false;
+  if (reader) { try { await reader.cancel(); } catch(e) {} }
+  if (port) { try { await port.close(); } catch(e) {} }
+  document.getElementById('statusPill').textContent = 'Disconnected';
+  document.getElementById('statusPill').className = 'status disconnected';
+  document.getElementById('connectBtn').textContent = 'Connect Serial';
+}
+
+async function readLoop() {
+  const textDecoder = new TextDecoderStream();
+  const readableClosed = port.readable.pipeTo(textDecoder.writable);
+  reader = textDecoder.readable.getReader();
+  let buffer = '';
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        parsePacket(line);
+      }
+    }
+  } catch (err) {
+    log('Read error: ' + err.message);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+document.getElementById('connectBtn').addEventListener('click', () => {
+  if (document.getElementById('connectBtn').textContent === 'Connect Serial') {
+    connect();
+  } else {
+    disconnect();
+  }
+});
+
+setInterval(() => {
+  const info = document.getElementById('packetInfo');
+  if (lastPacketTime > 0) {
+    const age = ((Date.now() - lastPacketTime) / 1000).toFixed(1);
+    info.textContent = `${packetCount} packets received, last ${age}s ago`;
+  }
+}, 500);
+</script>
+
+</body>
+</html>
