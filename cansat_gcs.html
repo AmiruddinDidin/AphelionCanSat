@@ -89,6 +89,15 @@
 </div>
 
 <div class="panel" style="margin-top:12px;">
+  <h2>Live video (VTX/VRX via capture card)</h2>
+  <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+    <button id="videoEnableBtn">Enable camera list</button>
+    <select id="videoDeviceSelect" style="flex:1; min-width:200px;"><option>Click "Enable camera list" first</option></select>
+  </div>
+  <video id="fpvVideo" autoplay playsinline muted style="width:100%; max-height:480px; background:#000; border-radius:8px;"></video>
+</div>
+
+<div class="panel" style="margin-top:12px;">
   <h2>Altitude over time</h2>
   <div class="chartWrap"><canvas id="altChart"></canvas></div>
 </div>
@@ -271,6 +280,52 @@ setInterval(() => {
     info.textContent = `${packetCount} packets received, last ${age}s ago`;
   }
 }, 500);
+
+let videoStream = null;
+
+async function enableVideoList() {
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    tempStream.getTracks().forEach(t => t.stop());
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+    const select = document.getElementById('videoDeviceSelect');
+    select.innerHTML = '';
+    if (videoInputs.length === 0) {
+      select.innerHTML = '<option>No video devices found</option>';
+      return;
+    }
+    videoInputs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Camera ${i + 1}`;
+      select.appendChild(opt);
+    });
+
+    startVideo(select.value);
+  } catch (err) {
+    log('Video error: ' + err.message);
+  }
+}
+
+async function startVideo(deviceId) {
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+  }
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: deviceId ? { exact: deviceId } : undefined }
+    });
+    document.getElementById('fpvVideo').srcObject = videoStream;
+  } catch (err) {
+    log('Video start error: ' + err.message);
+  }
+}
+
+document.getElementById('videoEnableBtn').addEventListener('click', enableVideoList);
+document.getElementById('videoDeviceSelect').addEventListener('change', (e) => startVideo(e.target.value));
 </script>
 
 </body>
