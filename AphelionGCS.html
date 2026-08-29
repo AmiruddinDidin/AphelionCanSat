@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Aphelion Ground Station</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: #0e1015; color: #e6e8ee;
+    font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; text-align: center; }
+  .dualGrid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 900px) { .dualGrid { grid-template-columns: 1fr; } }
+  .side {
+    background: #12141a; border: 1px solid #23262f; border-radius: 12px; padding: 14px;
+  }
+  .side.cansat { border-top: 3px solid #2563eb; }
+  .side.rocket { border-top: 3px solid #dc2626; }
+  .sideTitle { font-size: 15px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .side.cansat .dot { background: #2563eb; }
+  .side.rocket .dot { background: #dc2626; }
+  .topbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  button {
+    background: #2563eb; color: white; border: none; padding: 7px 14px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .side.rocket button { background: #dc2626; }
+  button:hover { filter: brightness(1.15); }
+  select {
+    background: #1c1f27; color: #e6e8ee; border: 1px solid #333742;
+    border-radius: 6px; padding: 7px; font-size: 13px;
+  }
+  .status { font-size: 12px; padding: 3px 9px; border-radius: 12px; }
+  .status.connected { background: #14532d; color: #86efac; }
+  .status.disconnected { background: #450a0a; color: #fca5a5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .card {
+    background: #1c1f27; border: 1px solid #2a2e38; border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .card .label { font-size: 10px; color: #9aa0ab; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 17px; font-weight: 600; margin-top: 2px; }
+  .card .value.small { font-size: 13px; }
+  #cansat-map, #rocket-map { height: 220px; border-radius: 8px; margin-bottom: 12px; }
+  .horizonWrap { display: flex; justify-content: center; margin-bottom: 12px; }
+  canvas.horizon { background: #0a0c10; border-radius: 8px; }
+  .chartWrap { position: relative; height: 160px; margin-bottom: 12px; }
+  .log {
+    height: 110px; overflow-y: auto; background: #0a0c10; border-radius: 8px;
+    padding: 6px; font-family: monospace; font-size: 10px; color: #7dd3fc;
+    white-space: pre-wrap;
+  }
+  .packetInfo { font-size: 11px; color: #9aa0ab; }
+</style>
+</head>
+<body>
+
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <img src="A.png" alt="Aphelion Logo" style="height:52px; object-fit:contain;">
+    <h1 style="margin:0;">Aphelion Ground Station</h1>
+  </div>
+
+  <img id="ITBLogo" src="ITB_Logo.png" alt="ITB Logo" style="height:52px; max-width:160px; object-fit:contain;">
+</div>
+
+
+<div style="background:#12141a; border:1px solid #23262f; border-radius:12px; padding:14px; margin-bottom:16px;">
+  <div style="font-size:14px; font-weight:600; margin-bottom:10px;">Live Map: 🛰️ CanSat &nbsp;/&nbsp; 🚀 Rocket</div>
+  <div id="sharedMap" style="height:380px; border-radius:8px;"></div>
+</div>
+
+<div class="dualGrid">
+
+  <!-- ================= CANSAT PANEL ================= -->
+  <div class="side cansat">
+    <div class="sideTitle"><span class="dot"></span> CanSat</div>
+    <div class="topbar">
+      <button id="cansat-connectBtn">Connect Serial</button>
+      <select id="cansat-baudSelect">
+        <option value="9600" selected>9600</option>
+        <option value="19200">19200</option>
+        <option value="57600">57600</option>
+        <option value="115200">115200</option>
+      </select>
+      <span id="cansat-statusPill" class="status disconnected">Disconnected</span>
+      <span id="cansat-packetInfo" class="packetInfo"></span>
+    </div>
+    <div class="grid">
+      <div class="card"><div class="label">Alt (GPS)</div><div class="value" id="cansat-valGpsAlt">--</div></div>
+      <div class="card"><div class="label">Alt (baro)</div><div class="value" id="cansat-valBaroAlt">--</div></div>
+      <div class="card"><div class="label">Sats</div><div class="value" id="cansat-valSats">--</div></div>
+      <div class="card"><div class="label">Pressure</div><div class="value small" id="cansat-valPress">--</div></div>
+      <div class="card"><div class="label">Temp</div><div class="value small" id="cansat-valTemp">--</div></div>
+      <div class="card"><div class="label">R/P/Y</div><div class="value small" id="cansat-valAttitude">--</div></div>
+    </div>
+    <div class="horizonWrap"><canvas class="horizon" id="cansat-horizon" width="200" height="200"></canvas></div>
+    <div class="chartWrap"><canvas id="cansat-altChart"></canvas></div>
+    <div class="log" id="cansat-log"></div>
+
+    <div style="margin-top:12px;">
+      <div class="sideTitle" style="font-size:13px; margin-bottom:8px;">Live video (VTX/VRX via capture card)</div>
+      <div class="topbar">
+        <button id="cansat-videoEnableBtn">Enable camera list</button>
+        <select id="cansat-videoDeviceSelect" style="flex:1; min-width:150px;"><option>Click "Enable camera list" first</option></select>
+      </div>
+      <video id="cansat-fpvVideo" autoplay playsinline muted style="width:100%; max-height:280px; background:#000; border-radius:8px;"></video>
+    </div>
+  </div>
+
+  <!-- ================= ROCKET PANEL ================= -->
+  <div class="side rocket">
+    <div class="sideTitle"><span class="dot"></span> Rocket</div>
+    <div class="topbar">
+      <button id="rocket-connectBtn">Connect Serial</button>
+      <select id="rocket-baudSelect">
+        <option value="9600" selected>9600</option>
+        <option value="19200">19200</option>
+        <option value="57600">57600</option>
+        <option value="115200">115200</option>
+      </select>
+      <span id="rocket-statusPill" class="status disconnected">Disconnected</span>
+      <span id="rocket-packetInfo" class="packetInfo"></span>
+    </div>
+    <div class="grid">
+      <div class="card"><div class="label">Alt (GPS)</div><div class="value" id="rocket-valGpsAlt">--</div></div>
+      <div class="card"><div class="label">Alt (baro)</div><div class="value" id="rocket-valBaroAlt">--</div></div>
+      <div class="card"><div class="label">Sats</div><div class="value" id="rocket-valSats">--</div></div>
+      <div class="card"><div class="label">Pressure</div><div class="value small" id="rocket-valPress">--</div></div>
+      <div class="card"><div class="label">Temp</div><div class="value small" id="rocket-valTemp">--</div></div>
+      <div class="card"><div class="label">R/P/Y</div><div class="value small" id="rocket-valAttitude">--</div></div>
+    </div>
+    <div class="horizonWrap"><canvas class="horizon" id="rocket-horizon" width="200" height="200"></canvas></div>
+    <div class="chartWrap"><canvas id="rocket-altChart"></canvas></div>
+    <div class="log" id="rocket-log"></div>
+  </div>
+
+</div>
+
+<script>
+// Shared map: both vehicles plot onto the same Leaflet instance, distinguished
+// by an emoji marker (🛰️ CanSat, 🚀 Rocket) and a colored trail line.
+const sharedMap = L.map('sharedMap').setView([-6.9, 107.6], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(sharedMap);
+
+function emojiIcon(emoji) {
+  return L.divIcon({
+    html: `<div style="font-size:26px; line-height:26px; text-align:center; filter: drop-shadow(0 0 3px #000);">${emoji}</div>`,
+    className: '',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13]
+  });
+}
+
+// Factory: creates a fully independent telemetry dashboard instance for one
+// vehicle, plotting onto the SHARED map above. Expects the SAME $TLM CSV
+// format used by the CanSat firmware. If the rocket's telemetry format
+// differs, adjust parsePacket() in its instance.
+function createDashboard(prefix, lineColor, emoji) {
+  const els = {
+    connectBtn: document.getElementById(`${prefix}-connectBtn`),
+    baudSelect: document.getElementById(`${prefix}-baudSelect`),
+    statusPill: document.getElementById(`${prefix}-statusPill`),
+    packetInfo: document.getElementById(`${prefix}-packetInfo`),
+    valGpsAlt: document.getElementById(`${prefix}-valGpsAlt`),
+    valBaroAlt: document.getElementById(`${prefix}-valBaroAlt`),
+    valSats: document.getElementById(`${prefix}-valSats`),
+    valPress: document.getElementById(`${prefix}-valPress`),
+    valTemp: document.getElementById(`${prefix}-valTemp`),
+    valAttitude: document.getElementById(`${prefix}-valAttitude`),
+    horizon: document.getElementById(`${prefix}-horizon`),
+    log: document.getElementById(`${prefix}-log`),
+  };
+
+  let port, reader, keepReading = false;
+  let packetCount = 0, lastPacketTime = 0;
+  const trail = [];
+
+  const marker = L.marker([-6.9, 107.6], { icon: emojiIcon(emoji) }).addTo(sharedMap);
+  const polyline = L.polyline([], { color: lineColor }).addTo(sharedMap);
+
+  const ctx = document.getElementById(`${prefix}-altChart`).getContext('2d');
+  const altChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'GPS alt (m)', data: [], borderColor: '#22c55e', tension: 0.2, pointRadius: 0 },
+      { label: 'Baro alt (m)', data: [], borderColor: '#f59e0b', tension: 0.2, pointRadius: 0 }
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ticks: { color: '#9aa0ab', maxTicksLimit: 6 }, grid: { color: '#2a2e38' } },
+        y: { ticks: { color: '#9aa0ab' }, grid: { color: '#2a2e38' } }
+      },
+      plugins: { legend: { labels: { color: '#c7cbd4', boxWidth: 10, font: { size: 10 } } } }
+    }
+  });
+
+  function drawHorizon(rollDeg, pitchDeg) {
+    const c = els.horizon, g = c.getContext('2d');
+    const w = c.width, h = c.height, cx = w/2, cy = h/2, r = 85;
+    g.clearRect(0,0,w,h);
+    g.save();
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.clip();
+    g.save();
+    g.translate(cx, cy);
+    g.rotate(rollDeg * Math.PI / 180);
+    const pitchOffset = pitchDeg * 2;
+    g.fillStyle = '#3b82f6';
+    g.fillRect(-r*2, -r*2 + pitchOffset, r*4, r*2);
+    g.fillStyle = '#8a5a2c';
+    g.fillRect(-r*2, pitchOffset, r*4, r*2);
+    g.strokeStyle = '#ffffff'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(-r*2, pitchOffset); g.lineTo(r*2, pitchOffset); g.stroke();
+    g.restore();
+    g.restore();
+    g.strokeStyle = '#e6e8ee'; g.lineWidth = 2;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.stroke();
+    g.strokeStyle = '#facc15'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(cx - 22, cy); g.lineTo(cx - 6, cy); g.stroke();
+    g.beginPath(); g.moveTo(cx + 6, cy); g.lineTo(cx + 22, cy); g.stroke();
+  }
+  drawHorizon(0, 0);
+
+  function log(line) {
+    els.log.textContent += line + "\n";
+    els.log.scrollTop = els.log.scrollHeight;
+  }
+
+  function parsePacket(line) {
+    line = line.trim();
+    if (!line.startsWith('$TLM,')) return;
+    const parts = line.split(',');
+    if (parts.length < 19) return;
+
+    const [ , ms, lat, lon, gpsAlt, sats, pressHpa, baroAlt, baroTemp,
+            roll, pitch, yaw ] = parts;
+
+    const flat = parseFloat(lat), flon = parseFloat(lon);
+    els.valGpsAlt.textContent = parseFloat(gpsAlt).toFixed(1) + ' m';
+    els.valBaroAlt.textContent = parseFloat(baroAlt).toFixed(1) + ' m';
+    els.valSats.textContent = sats;
+    els.valPress.textContent = parseFloat(pressHpa).toFixed(1) + ' hPa';
+    els.valTemp.textContent = parseFloat(baroTemp).toFixed(1) + ' C';
+    els.valAttitude.textContent =
+      parseFloat(roll).toFixed(1) + '/' + parseFloat(pitch).toFixed(1) + '/' + parseFloat(yaw).toFixed(1);
+
+    drawHorizon(parseFloat(roll), parseFloat(pitch));
+
+    if (flat !== 0 && flon !== 0) {
+      marker.setLatLng([flat, flon]);
+      trail.push([flat, flon]);
+      polyline.setLatLngs(trail);
+      if (trail.length === 1) sharedMap.setView([flat, flon], 16);
+    }
+
+    const tSec = (parseFloat(ms) / 1000).toFixed(1);
+    altChart.data.labels.push(tSec);
+    altChart.data.datasets[0].data.push(parseFloat(gpsAlt));
+    altChart.data.datasets[1].data.push(parseFloat(baroAlt));
+    if (altChart.data.labels.length > 80) {
+      altChart.data.labels.shift();
+      altChart.data.datasets[0].data.shift();
+      altChart.data.datasets[1].data.shift();
+    }
+    altChart.update('none');
+
+    packetCount++;
+    lastPacketTime = Date.now();
+    log(line);
+  }
+
+  async function connect() {
+    if (!('serial' in navigator)) {
+      alert('Web Serial not supported. Use Chrome or Edge desktop.');
+      return;
+    }
+    try {
+      port = await navigator.serial.requestPort();
+      const baud = parseInt(els.baudSelect.value, 10);
+      await port.open({ baudRate: baud });
+      els.statusPill.textContent = 'Connected';
+      els.statusPill.className = 'status connected';
+      els.connectBtn.textContent = 'Disconnect';
+      keepReading = true;
+      readLoop();
+    } catch (err) {
+      log('Connection error: ' + err.message);
+    }
+  }
+
+  async function disconnect() {
+    keepReading = false;
+    if (reader) { try { await reader.cancel(); } catch(e) {} }
+    if (port) { try { await port.close(); } catch(e) {} }
+    els.statusPill.textContent = 'Disconnected';
+    els.statusPill.className = 'status disconnected';
+    els.connectBtn.textContent = 'Connect Serial';
+  }
+
+  async function readLoop() {
+    const textDecoder = new TextDecoderStream();
+    port.readable.pipeTo(textDecoder.writable);
+    reader = textDecoder.readable.getReader();
+    let buffer = '';
+    try {
+      while (keepReading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
+          parsePacket(line);
+        }
+      }
+    } catch (err) {
+      log('Read error: ' + err.message);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  els.connectBtn.addEventListener('click', () => {
+    if (els.connectBtn.textContent === 'Connect Serial') connect();
+    else disconnect();
+  });
+
+  setInterval(() => {
+    if (lastPacketTime > 0) {
+      const age = ((Date.now() - lastPacketTime) / 1000).toFixed(1);
+      els.packetInfo.textContent = `${packetCount} pkts, last ${age}s ago`;
+    }
+  }, 500);
+}
+
+createDashboard('cansat', '#2563eb', '🛰️');
+createDashboard('rocket', '#dc2626', '🚀');
+
+// ---------------- CanSat-only: live video (VTX/VRX via USB capture card) ----------------
+let cansatVideoStream = null;
+
+async function cansatEnableVideoList() {
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+    tempStream.getTracks().forEach(t => t.stop());
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+    const select = document.getElementById('cansat-videoDeviceSelect');
+    select.innerHTML = '';
+    if (videoInputs.length === 0) {
+      select.innerHTML = '<option>No video devices found</option>';
+      return;
+    }
+    videoInputs.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Camera ${i + 1}`;
+      select.appendChild(opt);
+    });
+
+    cansatStartVideo(select.value);
+  } catch (err) {
+    console.error('Video error:', err.message);
+  }
+}
+
+async function cansatStartVideo(deviceId) {
+  if (cansatVideoStream) {
+    cansatVideoStream.getTracks().forEach(t => t.stop());
+  }
+  try {
+    cansatVideoStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: deviceId ? { exact: deviceId } : undefined }
+    });
+    document.getElementById('cansat-fpvVideo').srcObject = cansatVideoStream;
+  } catch (err) {
+    console.error('Video start error:', err.message);
+  }
+}
+
+document.getElementById('cansat-videoEnableBtn').addEventListener('click', cansatEnableVideoList);
+document.getElementById('cansat-videoDeviceSelect').addEventListener('change', (e) => cansatStartVideo(e.target.value));
+</script>
+
+</body>
+</html>
