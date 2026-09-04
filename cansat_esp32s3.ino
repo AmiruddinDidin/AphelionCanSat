@@ -14,8 +14,8 @@
     LoRa E220   M0, M1 -> GND
     I2C SDA -> GP13
     I2C SCL -> GP12
-    GPS TX  -> GP18 (ESP32 RX2)
-    GPS RX  -> GP17 (ESP32 TX2)   
+    GPS TX  -> GP44 (ESP32 RX2)
+    GPS RX  -> GP43 (ESP32 TX2)   
 
   Required libraries (Arduino Library Manager):
     - TinyGPSPlus        by Mikal Hart
@@ -41,8 +41,8 @@
 #define LORA_RX_PIN    1     // ESP32 RX1 <- E220 TX
 #define LORA_TX_PIN    2     // ESP32 TX1 -> E220 RX
 
-#define GPS_RX_PIN     18    // ESP32 RX2 <- GPS TX
-#define GPS_TX_PIN     17    // ESP32 TX2 -> GPS RX
+#define GPS_TX_PIN     43    // ESP32 TX2 -> GPS RX
+#define GPS_RX_PIN     44    // ESP32 RX2 <- GPS TX
 
 #define SD_CS_PIN      4
 #define SD_MOSI_PIN    5
@@ -51,7 +51,7 @@
 
 // ---------------- UARTs ----------------
 HardwareSerial LoRaSerial(1);   // UART1 -> E220
-HardwareSerial GPSSerial(2);    // UART2 -> NEO-M7M
+HardwareSerial gpsSerial(2);    // UART2 -> NEO-M8N
 
 // ---------------- Sensor objects ----------------
 TinyGPSPlus gps;
@@ -105,6 +105,8 @@ void setupSD() {
   }
 }
 
+
+
 void logToSD(const char* packet) {
   if (!sdOK) return;
 
@@ -121,7 +123,7 @@ void logToSD(const char* packet) {
 // ---------------- Setup ----------------
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  delay(1000);
   Serial.println(F("=== CanSat Initialize ==="));
 
   // I2C bus
@@ -131,7 +133,25 @@ void setup() {
   LoRaSerial.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
 
   // GPS UART
-  GPSSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+  // Wait up to 1.5 seconds to see if the GPS broadcasts any NMEA data
+  bool gpsHardwareOK = false;
+  uint32_t gpsWaitTimer = millis();
+  
+  while (millis() - gpsWaitTimer < 1500) {
+    if (gpsSerial.available() > 0) {
+      gpsHardwareOK = true;
+      break; // Data detected, exit the wait loop
+    }
+    delay(10); // Yield briefly
+  }
+
+  if (gpsHardwareOK) {
+    Serial.println(F("GPS OK"));
+  } else {
+    Serial.println(F("GPS NOT FOUND (Check TX/RX wiring or Baud Rate)"));
+  }
 
   // BNO055
   if (bno.begin()) {
@@ -160,9 +180,18 @@ void setup() {
 
 // ---------------- Main loop ----------------
 void loop() {
+  static uint32_t lastDebug = 0;
+
   // Feed GPS parser continuously
-  while (GPSSerial.available()) {
-    gps.encode(GPSSerial.read());
+while (gpsSerial.available()) {
+  gps.encode(gpsSerial.read());
+}
+
+  if (millis() - lastDebug > 2000) {
+    lastDebug = millis();
+    Serial.printf("GPS chars=%lu sentences=%lu failedCS=%lu sats=%d fixValid=%d\n",
+      gps.charsProcessed(), gps.sentencesWithFix(), gps.failedChecksum(),
+      gps.satellites.value(), gps.location.isValid());
   }
 
   if (millis() - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
